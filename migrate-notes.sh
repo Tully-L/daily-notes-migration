@@ -128,13 +128,36 @@ tell application "Notes"
     end repeat
     log "Found " & (count of sourceNotes) & " source notes: " & sourceNames
     
-    -- Concatenate plaintext from ALL source notes
+    -- Concatenate plaintext from ALL source notes (skip first line = note title)
     set notePlain to ""
+    set originalDelimiters to AppleScript's text item delimiters
     repeat with sn in sourceNotes
-        if notePlain is not "" then
-            set notePlain to notePlain & return
-        end if
-        set notePlain to notePlain & plaintext of sn
+        set snText to plaintext of sn
+        set AppleScript's text item delimiters to return
+        set snLines to every paragraph of snText
+        set AppleScript's text item delimiters to originalDelimiters
+        -- Skip first line (note title) and any duplicate title lines after it
+        set started to false
+        set snName to name of sn
+        repeat with lineNum from 2 to count of snLines
+            set lineContent to item lineNum of snLines
+            set trimmedLine to my trimText(lineContent)
+            -- Skip if this line is just the note name again (duplicate title)
+            if not started and trimmedLine is snName then
+                -- still in the title area, skip
+            else if not started and trimmedLine is not "" then
+                set started to true
+                if notePlain is not "" then
+                    set notePlain to notePlain & return
+                end if
+                set notePlain to notePlain & lineContent
+            else if started then
+                if notePlain is not "" then
+                    set notePlain to notePlain & return
+                end if
+                set notePlain to notePlain & lineContent
+            end if
+        end repeat
     end repeat
     
     -- Parse paragraphs
@@ -202,8 +225,8 @@ tell application "Notes"
     log "Found " & (count of sectionTasks) & " unchecked tasks, " & (count of sectionContacts) & " contacts, " & (count of sectionFixes) & " fixes, " & (count of sectionNotes) & " notes"
     
     -- Build HTML with full template (always includes all sections)
-    set htmlBody to "<div><h1>" & targetName & "</h1></div>" & return
-    set htmlBody to htmlBody & "<div><i>📋 从 " & sourceNames & " 迁移</i></div>" & return
+    -- Note: Notes already displays the title; no separate <h1> in body
+    set htmlBody to "<div><i>📋 从 " & sourceNames & " 迁移</i></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
     
     -- Section 1: 今日任务（只保留 ☐ 未完成）
@@ -274,8 +297,16 @@ tell application "Notes"
     end if
     
     if existingNote is not missing value then
-        -- Target exists: check if we have anything new to migrate
+        -- Target exists: check if it was already created by the script
+        -- (has the 📋 migration marker or heading title)
         set existingPlain to plaintext of existingNote
+        
+        -- If target already has a migration header from a previous run, it has the full template
+        -- Skip entirely (avoid duplicating sections)
+        if existingPlain contains "📋" and existingPlain contains targetName then
+            -- Already has the script template → skip
+            return "OK Skipped '" & targetName & "': already has template (from previous run)"
+        end if
         
         -- Nothing to migrate → skip
         set hasContent to (count of sectionTasks) > 0 or (count of sectionContacts) > 0 or (count of sectionFixes) > 0 or (count of sectionNotes) > 0
@@ -283,7 +314,7 @@ tell application "Notes"
             return "OK Skipped '" & targetName & "': no content to migrate"
         end if
         
-        -- Build content string for duplicate detection (only tasks + contacts + fixes, not placeholder text)
+        -- Build content string for duplicate detection
         set sourcePlain to ""
         if (count of sectionTasks) > 0 then
             set AppleScript's text item delimiters to return
