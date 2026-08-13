@@ -102,42 +102,40 @@ tell application "Notes"
         return "ERROR: Notes folder not found"
     end if
     
-    -- Find source note by MMDD- prefix
-    -- Priority: exact "0812-" (no suffix) > first "0812-xxx" (with suffix)
-    set sourceNote to missing value
-    set sourceFallback to missing value
+    -- Find all source notes matching MMDD- prefix
+    -- Collect content from ALL matching notes (not just one)
+    set sourceNotes to {}
     set noteList to notes of targetFolder
     repeat with n in noteList
         set noteName to name of n
         if noteName starts with sourcePrefix then
-            if noteName does not contain "规范版" and ¬
-               noteName does not contain "理想版" then
-                if noteName is sourcePrefix then
-                    -- Exact match "0812-" → use immediately
-                    set sourceNote to n
-                    exit repeat
-                else if sourceFallback is missing value then
-                    -- First suffixed match "0812-xxx" → save as fallback
-                    set sourceFallback to n
-                end if
-            end if
+            set end of sourceNotes to n
         end if
     end repeat
     
-    -- Use fallback if no exact match found
-    if sourceNote is missing value and sourceFallback is not missing value then
-        set sourceNote to sourceFallback
-    end if
-    
-    if sourceNote is missing value then
+    if (count of sourceNotes) is 0 then
         return "ERROR: No source note found for prefix " & sourcePrefix
     end if
     
-    set sourceName to name of sourceNote
-    log "Found source: " & sourceName
+    -- Log all found source notes
+    set sourceNames to ""
+    repeat with sn in sourceNotes
+        if sourceNames is "" then
+            set sourceNames to name of sn
+        else
+            set sourceNames to sourceNames & ", " & name of sn
+        end if
+    end repeat
+    log "Found " & (count of sourceNotes) & " source notes: " & sourceNames
     
-    -- Read content
-    set notePlain to plaintext of sourceNote
+    -- Concatenate plaintext from ALL source notes
+    set notePlain to ""
+    repeat with sn in sourceNotes
+        if notePlain is not "" then
+            set notePlain to notePlain & return
+        end if
+        set notePlain to notePlain & plaintext of sn
+    end repeat
     
     -- Parse paragraphs
     set originalDelimiters to AppleScript's text item delimiters
@@ -172,7 +170,15 @@ tell application "Notes"
             end if
         else if trimmed is not "" then
             -- Content line — classify by current section
-            if currentSection is "tasks" then
+            -- If no section header seen yet (simple unstructured notes), use content-based classification
+            if currentSection is "" then
+                -- No section header yet → unstructured note: classify by content
+                if trimmed starts with "☐" then
+                    set end of sectionTasks to trimmed
+                else if trimmed does not start with "✓" and trimmed does not start with "📋" then
+                    set end of sectionNotes to trimmed
+                end if
+            else if currentSection is "tasks" then
                 if trimmed starts with "☐" then
                     set end of sectionTasks to trimmed
                 end if
@@ -197,9 +203,7 @@ tell application "Notes"
     
     -- Build HTML with full template (always includes all sections)
     set htmlBody to "<div><h1>" & targetName & "</h1></div>" & return
-    if sourceNote is not missing value then
-        set htmlBody to htmlBody & "<div><i>📋 从 " & sourceName & " 迁移</i></div>" & return
-    end if
+    set htmlBody to htmlBody & "<div><i>📋 从 " & sourceNames & " 迁移</i></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
     
     -- Section 1: 今日任务（只保留 ☐ 未完成）
@@ -299,7 +303,7 @@ tell application "Notes"
         
         -- New content → append at bottom
         set existingBody to body of existingNote
-        set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 从 " & sourceName & " 追加迁移</b></div>" & return & "<div><br></div>" & return
+        set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 从 " & sourceNames & " 追加迁移</b></div>" & return & "<div><br></div>" & return
         
         -- Section 1: 今日任务（只保留 ☐ 未完成）
         set newContent to newContent & "<div><b>━━━ 今日任务 ━━━</b></div>" & return & "<div><br></div>" & return
@@ -345,11 +349,11 @@ tell application "Notes"
         end if
         
         set body of existingNote to existingBody & return & newContent
-        return "OK Appended '" & targetName & "' (new items from " & sourceName & ")"
+        return "OK Appended '" & targetName & "' (new items from " & sourceNames & ")"
     else
         -- Target doesn't exist: create with full template
         make new note at targetFolder with properties {name:targetName, body:htmlBody}
-        return "OK Created '" & targetName & "' (" & (count of sectionTasks) & " tasks from " & sourceName & ")"
+        return "OK Created '" & targetName & "' (" & (count of sectionTasks) & " tasks from " & sourceNames & ")"
     end if
 end tell
 ENDOSA
