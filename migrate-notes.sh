@@ -169,10 +169,11 @@ tell application "Notes"
     -- Parse by sections
     -- Section headers: "━━━ 今日任务 ━━━", "━━━ 待联系群组 ━━━", "━━━ 问题修复 ━━━", "━━━ 参考 & 备忘 ━━━"
     set currentSection to ""
-    set sectionTasks to {}     -- content under 今日任务
-    set sectionContacts to {}  -- content under 待联系群组
-    set sectionFixes to {}     -- content under 问题修复
-    set sectionNotes to {}     -- content under 参考 & 备忘
+    set sectionTasks to {}          -- content under 今日任务
+    set sectionContacts to {}       -- content under 待联系群组
+    set sectionFixes to {}          -- content under 问题修复
+    set sectionCarryForward to {}   -- content under 明日保留
+    set sectionNotes to {}          -- content under 参考 & 备忘 (stays behind)
     
     repeat with i from 1 to count of paraList
         set p to item i of paraList
@@ -186,6 +187,8 @@ tell application "Notes"
                 set currentSection to "contacts"
             else if trimmed contains "问题修复" then
                 set currentSection to "fixes"
+            else if trimmed contains "明日保留" then
+                set currentSection to "carryForward"
             else if trimmed contains "参考" or trimmed contains "备忘" then
                 set currentSection to "notes"
             else
@@ -214,15 +217,17 @@ tell application "Notes"
                 if trimmed does not start with "✓" and trimmed does not start with "📋" then
                     set end of sectionFixes to trimmed
                 end if
-            else if currentSection is "notes" then
+            else if currentSection is "carryForward" then
                 if trimmed does not start with "✓" and trimmed does not start with "📋" then
-                    set end of sectionNotes to trimmed
+                    set end of sectionCarryForward to trimmed
                 end if
+            else if currentSection is "notes" then
+                -- 参考 & 备忘 stays behind, NOT migrated to target
             end if
         end if
     end repeat
     
-    log "Found " & (count of sectionTasks) & " unchecked tasks, " & (count of sectionContacts) & " contacts, " & (count of sectionFixes) & " fixes, " & (count of sectionNotes) & " notes"
+    log "Found " & (count of sectionTasks) & " unchecked tasks, " & (count of sectionContacts) & " contacts, " & (count of sectionFixes) & " fixes, " & (count of sectionCarryForward) & " carry-forward, " & (count of sectionNotes) & " notes (stays behind)"
     
     -- Build HTML with full template (always includes all sections)
     -- Note: Notes already displays the title; no separate <h1> in body
@@ -265,16 +270,22 @@ tell application "Notes"
     end if
     set htmlBody to htmlBody & "<div><br></div>" & return
     
-    -- Section 4: 参考 & 备忘（继承上一天内容）
-    set htmlBody to htmlBody & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return
+    -- Section 4: 明日保留（继承上一天内容 — 用户标记想带的内容）
+    set htmlBody to htmlBody & "<div><b>━━━ 明日保留 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionNotes) > 0 then
-        repeat with nr in sectionNotes
-            set htmlBody to htmlBody & "<div>" & nr & "</div>" & return
+    if (count of sectionCarryForward) > 0 then
+        repeat with cf in sectionCarryForward
+            set htmlBody to htmlBody & "<div>" & cf & "</div>" & return
         end repeat
     else
         set htmlBody to htmlBody & "<div><i>（暂无）</i></div>" & return
     end if
+    set htmlBody to htmlBody & "<div><br></div>" & return
+    
+    -- Section 5: 参考 & 备忘（留空 — 不自动迁移，用户当天写当天留）
+    set htmlBody to htmlBody & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return
+    set htmlBody to htmlBody & "<div><br></div>" & return
+    set htmlBody to htmlBody & "<div><i>（在此添加备注、链接、参考资料）</i></div>" & return
     
     -- Check if target already exists (user may have pre-created it)
     -- Priority: exact "0813-" (no suffix) > first "0813-xxx" (with suffix)
@@ -309,7 +320,7 @@ tell application "Notes"
         end if
         
         -- Nothing to migrate → skip
-        set hasContent to (count of sectionTasks) > 0 or (count of sectionContacts) > 0 or (count of sectionFixes) > 0 or (count of sectionNotes) > 0
+        set hasContent to (count of sectionTasks) > 0 or (count of sectionContacts) > 0 or (count of sectionFixes) > 0 or (count of sectionCarryForward) > 0
         if not hasContent then
             return "OK Skipped '" & targetName & "': no content to migrate"
         end if
@@ -369,15 +380,20 @@ tell application "Notes"
         end if
         set newContent to newContent & "<div><br></div>" & return
         
-        -- Section 4: 参考 & 备忘（继承上一天内容）
-        set newContent to newContent & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return & "<div><br></div>" & return
-        if (count of sectionNotes) > 0 then
-            repeat with nr in sectionNotes
-                set newContent to newContent & "<div>" & nr & "</div>" & return
+        -- Section 4: 明日保留（继承上一天内容）
+        set newContent to newContent & "<div><b>━━━ 明日保留 ━━━</b></div>" & return & "<div><br></div>" & return
+        if (count of sectionCarryForward) > 0 then
+            repeat with cf in sectionCarryForward
+                set newContent to newContent & "<div>" & cf & "</div>" & return
             end repeat
         else
             set newContent to newContent & "<div><i>（暂无）</i></div>" & return
         end if
+        set newContent to newContent & "<div><br></div>" & return
+        
+        -- Section 5: 参考 & 备忘（留空 — 当天写当天留）
+        set newContent to newContent & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return & "<div><br></div>" & return
+        set newContent to newContent & "<div><i>（在此添加备注、链接、参考资料）</i></div>" & return
         
         set body of existingNote to existingBody & return & newContent
         return "OK Appended '" & targetName & "' (new items from " & sourceNames & ")"
