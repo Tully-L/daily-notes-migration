@@ -40,55 +40,38 @@ if [ -f "$HOLIDAYS_FILE" ]; then
     fi
 fi
 
-# ── 计算目标日期 ──
-if [ "$WEEKDAY" -eq 5 ]; then
-    # Friday → next Monday
-    TARGET_DATE=$(date -v+3d)
-    TARGET_MM=$(date -v+3d +%m)
-    TARGET_DD=$(date -v+3d +%d)
-    TARGET_WDAY=$(date -v+3d +%u)
-    TARGET_WNAME=$(date -v+3d +%a)
-    echo "Friday → next Monday"
+# ── 计算源日期（昨天/上周五） ──
+if [ "$WEEKDAY" -eq 1 ]; then
+    # Monday → source = last Friday
+    SOURCE_MM=$(date -v-3d +%m)
+    SOURCE_DD=$(date -v-3d +%d)
+    echo "Monday → source last Friday"
 else
-    # Mon-Thu → next day
-    TARGET_DATE=$(date -v+1d)
-    TARGET_MM=$(date -v+1d +%m)
-    TARGET_DD=$(date -v+1d +%d)
-    TARGET_WDAY=$(date -v+1d +%u)
-    TARGET_WNAME=$(date -v+1d +%a)
-    echo "Weekday → next day"
+    # Tue-Fri → source = yesterday
+    SOURCE_MM=$(date -v-1d +%m)
+    SOURCE_DD=$(date -v-1d +%d)
+    echo "Weekday → source yesterday"
 fi
 
-# ── 目标笔记名称 ──
-TARGET_PREFIX="${TARGET_MM}${TARGET_DD}-"
-if [ "$TARGET_WDAY" -eq 2 ]; then
+# ── 源笔记前缀 ──
+SOURCE_PREFIX="${SOURCE_MM}${SOURCE_DD}-"
+echo "Source prefix: $SOURCE_PREFIX"
+
+# ── 目标笔记名称（今天） ──
+TARGET_PREFIX="${MONTH}${DAY}-"
+if [ "$WEEKDAY" -eq 2 ]; then
     TARGET_NAME="${TARGET_PREFIX}Tue"
 else
     TARGET_NAME="${TARGET_PREFIX}"
 fi
 
-echo "Target note: $TARGET_NAME (${TARGET_WNAME})"
-
-# ── 源笔记前缀（默认今天，找不到时回溯到昨天） ──
-SOURCE_PREFIX="${MONTH}${DAY}-"
-echo "Source prefix: $SOURCE_PREFIX"
-
-# ── 回溯前缀（昨天/上周五） ──
-if [ "$WEEKDAY" -eq 1 ]; then
-    # Monday → fallback to last Friday
-    FALLBACK_PREFIX="$(date -v-3d +%m)$(date -v-3d +%d)-"
-else
-    # Tue-Fri → fallback to yesterday
-    FALLBACK_PREFIX="$(date -v-1d +%m)$(date -v-1d +%d)-"
-fi
-echo "Fallback prefix: $FALLBACK_PREFIX"
+echo "Target note: $TARGET_NAME (${WEEKDAY_SHORT})"
 
 # ── 执行迁移 ──
 /usr/bin/osascript <<ENDOSA
 set accountName to "On My Mac"
 set folderName to "Notes"
 set sourcePrefix to "$SOURCE_PREFIX"
-set fallbackPrefix to "$FALLBACK_PREFIX"
 set targetName to "$TARGET_NAME"
 
 on trimText(s)
@@ -146,30 +129,8 @@ tell application "Notes"
         set sourceNote to sourceFallback
     end if
     
-    -- Fallback: if no note found for today's prefix, try yesterday
-    if sourceNote is missing value and fallbackPrefix is not "" then
-        log "Trying fallback prefix: " & fallbackPrefix
-        repeat with n in noteList
-            set noteName to name of n
-            if noteName starts with fallbackPrefix then
-                if noteName does not contain "规范版" and ¬
-                   noteName does not contain "理想版" then
-                    if noteName is fallbackPrefix then
-                        set sourceNote to n
-                        exit repeat
-                    else if sourceFallback is missing value then
-                        set sourceFallback to n
-                    end if
-                end if
-            end if
-        end repeat
-        if sourceNote is missing value and sourceFallback is not missing value then
-            set sourceNote to sourceFallback
-        end if
-    end if
-    
     if sourceNote is missing value then
-        return "ERROR: No source note found for " & sourcePrefix & " or " & fallbackPrefix
+        return "ERROR: No source note found for prefix " & sourcePrefix
     end if
     
     set sourceName to name of sourceNote
