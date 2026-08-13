@@ -40,42 +40,35 @@ if [ -f "$HOLIDAYS_FILE" ]; then
     fi
 fi
 
-# ── 计算目标日期 ──
-if [ "$WEEKDAY" -eq 5 ]; then
-    # Friday → next Monday
-    TARGET_DATE=$(date -v+3d)
-    echo "Friday → next Monday"
+# ── 计算源日期（昨天/上周五） ──
+# 脚本早上 8 点跑：源 = 昨天的笔记，目标 = 今天的笔记
+if [ "$WEEKDAY" -eq 1 ]; then
+    # Monday → source = last Friday
+    SOURCE_DATE=$(date -v-3d)
+    SOURCE_MM=$(date -v-3d +%m)
+    SOURCE_DD=$(date -v-3d +%d)
+    echo "Monday → source last Friday"
 else
-    # Mon-Thu → next day
-    TARGET_DATE=$(date -v+1d)
-    echo "Weekday → next day"
+    # Tue-Fri → source = yesterday
+    SOURCE_DATE=$(date -v-1d)
+    SOURCE_MM=$(date -v-1d +%m)
+    SOURCE_DD=$(date -v-1d +%d)
+    echo "Weekday → source yesterday"
 fi
 
-if [ "$WEEKDAY" -eq 5 ]; then
-    TARGET_MM=$(date -v+3d +%m)
-    TARGET_DD=$(date -v+3d +%d)
-    TARGET_WDAY=$(date -v+3d +%u)
-    TARGET_WNAME=$(date -v+3d +%a)
-else
-    TARGET_MM=$(date -v+1d +%m)
-    TARGET_DD=$(date -v+1d +%d)
-    TARGET_WDAY=$(date -v+1d +%u)
-    TARGET_WNAME=$(date -v+1d +%a)
-fi
+# ── 源笔记前缀 ──
+SOURCE_PREFIX="${SOURCE_MM}${SOURCE_DD}-"
+echo "Source prefix: $SOURCE_PREFIX"
 
-# ── 目标笔记名称 ──
-TARGET_PREFIX="${TARGET_MM}${TARGET_DD}-"
-if [ "$TARGET_WDAY" -eq 2 ]; then
+# ── 目标笔记名称（今天） ──
+TARGET_PREFIX="${MONTH}${DAY}-"
+if [ "$WEEKDAY" -eq 2 ]; then
     TARGET_NAME="${TARGET_PREFIX}Tue"
 else
     TARGET_NAME="${TARGET_PREFIX}"
 fi
 
-echo "Target note: $TARGET_NAME (${TARGET_WNAME})"
-
-# ── 源笔记前缀 ──
-SOURCE_PREFIX="${MONTH}${DAY}-"
-echo "Source prefix: $SOURCE_PREFIX"
+echo "Target note: $TARGET_NAME (${WEEKDAY_SHORT})"
 
 # ── 执行迁移 ──
 /usr/bin/osascript <<ENDOSA
