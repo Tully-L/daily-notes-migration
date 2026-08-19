@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # Daily Notes Migration Script
-# 每天自动迁移 Notes 中的未完成任务到第二天
+# 每天自动把"明日保留"变成第二天的"今日任务"
 #
 # 安装：LaunchAgent 控制运行时间（工作日 08:00）
 # 位置：~/Library/LaunchAgents/com.tully.daily-notes-migration.plist
@@ -97,13 +97,12 @@ tell application "Notes"
             exit repeat
         end if
     end repeat
-    
+
     if targetFolder is missing value then
         return "ERROR: Notes folder not found"
     end if
-    
+
     -- Find all source notes matching MMDD- prefix
-    -- Collect content from ALL matching notes (not just one)
     set sourceNotes to {}
     set noteList to notes of targetFolder
     repeat with n in noteList
@@ -112,11 +111,11 @@ tell application "Notes"
             set end of sourceNotes to n
         end if
     end repeat
-    
+
     if (count of sourceNotes) is 0 then
         return "ERROR: No source note found for prefix " & sourcePrefix
     end if
-    
+
     -- Log all found source notes
     set sourceNames to ""
     repeat with sn in sourceNotes
@@ -127,7 +126,7 @@ tell application "Notes"
         end if
     end repeat
     log "Found " & (count of sourceNotes) & " source notes: " & sourceNames
-    
+
     -- Concatenate plaintext from ALL source notes (skip first line = note title)
     set notePlain to ""
     set originalDelimiters to AppleScript's text item delimiters
@@ -136,13 +135,11 @@ tell application "Notes"
         set AppleScript's text item delimiters to return
         set snLines to every paragraph of snText
         set AppleScript's text item delimiters to originalDelimiters
-        -- Skip first line (note title) and any duplicate title lines after it
         set started to false
         set snName to name of sn
         repeat with lineNum from 2 to count of snLines
             set lineContent to item lineNum of snLines
             set trimmedLine to my trimText(lineContent)
-            -- Skip if this line is just the note name again (duplicate title)
             if not started and trimmedLine is snName then
                 -- still in the title area, skip
             else if not started and trimmedLine is not "" then
@@ -159,136 +156,70 @@ tell application "Notes"
             end if
         end repeat
     end repeat
-    
+
     -- Parse paragraphs
     set originalDelimiters to AppleScript's text item delimiters
     set AppleScript's text item delimiters to return
     set paraList to every paragraph of notePlain
     set AppleScript's text item delimiters to originalDelimiters
-    
-    -- Parse by sections
-    -- Section headers: "━━━ 今日任务 ━━━", "━━━ 待联系群组 ━━━", "━━━ 问题修复 ━━━", "━━━ 参考 & 备忘 ━━━"
+
+    -- Only the "明日保留" section carries forward — it becomes tomorrow's "今日任务".
+    -- 今日任务 / 问题修复 in the source are NOT migrated (fresh start each day).
+    -- 待联系群组 no longer exists as a category.
     set currentSection to ""
-    set sectionTasks to {}          -- content under 今日任务
-    set sectionContacts to {}       -- content under 待联系群组
-    set sectionFixes to {}          -- content under 问题修复
-    set sectionCarryForward to {}   -- content under 明日保留
-    set sectionNotes to {}          -- content under 参考 & 备忘 (stays behind)
-    
+    set sectionCarryForward to {}   -- content under 明日保留 in the source note
+
     repeat with i from 1 to count of paraList
         set p to item i of paraList
         set trimmed to my trimText(p)
-        
+
         if trimmed starts with "━━━" then
-            -- Section header
-            if trimmed contains "今日任务" then
-                set currentSection to "tasks"
-            else if trimmed contains "待联系群组" then
-                set currentSection to "contacts"
-            else if trimmed contains "问题修复" then
-                set currentSection to "fixes"
-            else if trimmed contains "明日保留" then
+            if trimmed contains "明日保留" then
                 set currentSection to "carryForward"
-            else if trimmed contains "参考" or trimmed contains "备忘" then
-                set currentSection to "notes"
             else
                 set currentSection to ""
             end if
         else if trimmed is not "" then
-            -- Content line — classify by current section
-            -- If no section header seen yet (simple unstructured notes), use content-based classification
-            if currentSection is "" then
-                -- No section header yet → unstructured note: classify by content
-                if trimmed starts with "☐" then
-                    set end of sectionTasks to trimmed
-                else if trimmed does not start with "✓" and trimmed does not start with "📋" then
-                    set end of sectionNotes to trimmed
-                end if
-            else if currentSection is "tasks" then
-                if trimmed starts with "☐" then
-                    set end of sectionTasks to trimmed
-                end if
-                -- ✓ completed tasks → skip
-            else if currentSection is "contacts" then
-                if trimmed does not start with "✓" and trimmed does not start with "📋" then
-                    set end of sectionContacts to trimmed
-                end if
-            else if currentSection is "fixes" then
-                if trimmed does not start with "✓" and trimmed does not start with "📋" then
-                    set end of sectionFixes to trimmed
-                end if
-            else if currentSection is "carryForward" then
+            if currentSection is "carryForward" then
                 if trimmed does not start with "✓" and trimmed does not start with "📋" then
                     set end of sectionCarryForward to trimmed
                 end if
-            else if currentSection is "notes" then
-                -- 参考 & 备忘 stays behind, NOT migrated to target
             end if
         end if
     end repeat
-    
-    log "Found " & (count of sectionTasks) & " unchecked tasks, " & (count of sectionContacts) & " contacts, " & (count of sectionFixes) & " fixes, " & (count of sectionCarryForward) & " carry-forward, " & (count of sectionNotes) & " notes (stays behind)"
-    
-    -- Build HTML with full template (always includes all sections)
-    -- Note: Notes already displays the title; no separate <h1> in body
+
+    log "Found " & (count of sectionCarryForward) & " items in 明日保留 → will become today's 今日任务"
+
+    -- Build HTML with the 4-section template (no placeholder text, no 待联系群组)
     set htmlBody to "<div><i>📋 从 " & sourceNames & " 迁移</i></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    
-    -- Section 1: 今日任务（只保留 ☐ 未完成）
+
+    -- Section 1: 今日任务 ← 昨天的明日保留
     set htmlBody to htmlBody & "<div><b>━━━ 今日任务 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionTasks) > 0 then
-        repeat with t in sectionTasks
+    if (count of sectionCarryForward) > 0 then
+        repeat with t in sectionCarryForward
             set htmlBody to htmlBody & "<div>" & t & "</div>" & return
         end repeat
-    else
-        set htmlBody to htmlBody & "<div><i>（暂无未完成任务）</i></div>" & return
+        set htmlBody to htmlBody & "<div><br></div>" & return
     end if
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    
-    -- Section 2: 待联系群组（继承上一天内容）
-    set htmlBody to htmlBody & "<div><b>━━━ 待联系群组 ━━━</b></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionContacts) > 0 then
-        repeat with c in sectionContacts
-            set htmlBody to htmlBody & "<div>" & c & "</div>" & return
-        end repeat
-    else
-        set htmlBody to htmlBody & "<div><i>（暂无）</i></div>" & return
-    end if
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    
-    -- Section 3: 问题修复（继承上一天内容）
+
+    -- Section 2: 问题修复（每天从空开始）
     set htmlBody to htmlBody & "<div><b>━━━ 问题修复 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionFixes) > 0 then
-        repeat with f in sectionFixes
-            set htmlBody to htmlBody & "<div>" & f & "</div>" & return
-        end repeat
-    else
-        set htmlBody to htmlBody & "<div><i>（暂无）</i></div>" & return
-    end if
     set htmlBody to htmlBody & "<div><br></div>" & return
-    
-    -- Section 4: 明日保留（继承上一天内容 — 用户标记想带的内容）
+
+    -- Section 3: 明日保留（每天从空开始）
     set htmlBody to htmlBody & "<div><b>━━━ 明日保留 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionCarryForward) > 0 then
-        repeat with cf in sectionCarryForward
-            set htmlBody to htmlBody & "<div>" & cf & "</div>" & return
-        end repeat
-    else
-        set htmlBody to htmlBody & "<div><i>（暂无）</i></div>" & return
-    end if
     set htmlBody to htmlBody & "<div><br></div>" & return
-    
-    -- Section 5: 参考 & 备忘（留空 — 不自动迁移，用户当天写当天留）
+
+    -- Section 4: 参考 & 备忘（每天从空开始）
     set htmlBody to htmlBody & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    set htmlBody to htmlBody & "<div><i>（在此添加备注、链接、参考资料）</i></div>" & return
-    
+    set htmlBody to htmlBody & "<div><br></div>" & return
+
     -- Check if target already exists (user may have pre-created it)
-    -- Priority: exact "0813-" (no suffix) > first "0813-xxx" (with suffix)
     set existingNote to missing value
     set existingFallback to missing value
     set noteList to notes of targetFolder
@@ -302,105 +233,53 @@ tell application "Notes"
             end if
         end if
     end repeat
-    
+
     if existingNote is missing value and existingFallback is not missing value then
         set existingNote to existingFallback
     end if
-    
+
     if existingNote is not missing value then
-        -- Target exists: check if it was already created by the script
-        -- (has the 📋 migration marker or heading title)
         set existingPlain to plaintext of existingNote
-        
-        -- If target already has a migration header from a previous run, it has the full template
-        -- Skip entirely (avoid duplicating sections)
+
         if existingPlain contains "📋" and existingPlain contains targetName then
-            -- Already has the script template → skip
             return "OK Skipped '" & targetName & "': already has template (from previous run)"
         end if
-        
-        -- Nothing to migrate → skip
-        set hasContent to (count of sectionTasks) > 0 or (count of sectionContacts) > 0 or (count of sectionFixes) > 0 or (count of sectionCarryForward) > 0
-        if not hasContent then
+
+        if (count of sectionCarryForward) is 0 then
             return "OK Skipped '" & targetName & "': no content to migrate"
         end if
-        
-        -- Build content string for duplicate detection
-        set sourcePlain to ""
-        if (count of sectionTasks) > 0 then
-            set AppleScript's text item delimiters to return
-            set sourcePlain to (sectionTasks as string)
-            set AppleScript's text item delimiters to originalDelimiters
-        end if
-        
-        -- Check if target already has this task content
+
+        set AppleScript's text item delimiters to return
+        set sourcePlain to (sectionCarryForward as string)
+        set AppleScript's text item delimiters to originalDelimiters
+
         set contentExists to false
         if sourcePlain is not "" and existingPlain contains sourcePlain then
             set contentExists to true
         end if
-        
+
         if contentExists then
             return "OK Skipped '" & targetName & "': all content already present"
         end if
-        
-        -- New content → append at bottom
+
         set existingBody to body of existingNote
         set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 从 " & sourceNames & " 追加迁移</b></div>" & return & "<div><br></div>" & return
-        
-        -- Section 1: 今日任务（只保留 ☐ 未完成）
+
         set newContent to newContent & "<div><b>━━━ 今日任务 ━━━</b></div>" & return & "<div><br></div>" & return
-        if (count of sectionTasks) > 0 then
-            repeat with t in sectionTasks
-                set newContent to newContent & "<div>" & t & "</div>" & return
-            end repeat
-        else
-            set newContent to newContent & "<div><i>（暂无未完成任务）</i></div>" & return
-        end if
+        repeat with t in sectionCarryForward
+            set newContent to newContent & "<div>" & t & "</div>" & return
+        end repeat
         set newContent to newContent & "<div><br></div>" & return
-        
-        -- Section 2: 待联系群组（继承上一天内容）
-        set newContent to newContent & "<div><b>━━━ 待联系群组 ━━━</b></div>" & return & "<div><br></div>" & return
-        if (count of sectionContacts) > 0 then
-            repeat with c in sectionContacts
-                set newContent to newContent & "<div>" & c & "</div>" & return
-            end repeat
-        else
-            set newContent to newContent & "<div><i>（暂无）</i></div>" & return
-        end if
-        set newContent to newContent & "<div><br></div>" & return
-        
-        -- Section 3: 问题修复（继承上一天内容）
-        set newContent to newContent & "<div><b>━━━ 问题修复 ━━━</b></div>" & return & "<div><br></div>" & return
-        if (count of sectionFixes) > 0 then
-            repeat with f in sectionFixes
-                set newContent to newContent & "<div>" & f & "</div>" & return
-            end repeat
-        else
-            set newContent to newContent & "<div><i>（暂无）</i></div>" & return
-        end if
-        set newContent to newContent & "<div><br></div>" & return
-        
-        -- Section 4: 明日保留（继承上一天内容）
-        set newContent to newContent & "<div><b>━━━ 明日保留 ━━━</b></div>" & return & "<div><br></div>" & return
-        if (count of sectionCarryForward) > 0 then
-            repeat with cf in sectionCarryForward
-                set newContent to newContent & "<div>" & cf & "</div>" & return
-            end repeat
-        else
-            set newContent to newContent & "<div><i>（暂无）</i></div>" & return
-        end if
-        set newContent to newContent & "<div><br></div>" & return
-        
-        -- Section 5: 参考 & 备忘（留空 — 当天写当天留）
-        set newContent to newContent & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return & "<div><br></div>" & return
-        set newContent to newContent & "<div><i>（在此添加备注、链接、参考资料）</i></div>" & return
-        
+
+        set newContent to newContent & "<div><b>━━━ 问题修复 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
+        set newContent to newContent & "<div><b>━━━ 明日保留 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
+        set newContent to newContent & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
+
         set body of existingNote to existingBody & return & newContent
-        return "OK Appended '" & targetName & "' (new items from " & sourceNames & ")"
+        return "OK Appended '" & targetName & "' (" & (count of sectionCarryForward) & " items from " & sourceNames & ")"
     else
-        -- Target doesn't exist: create with full template
         make new note at targetFolder with properties {name:targetName, body:htmlBody}
-        return "OK Created '" & targetName & "' (" & (count of sectionTasks) & " tasks from " & sourceNames & ")"
+        return "OK Created '" & targetName & "' (" & (count of sectionCarryForward) & " items from " & sourceNames & ")"
     end if
 end tell
 ENDOSA
