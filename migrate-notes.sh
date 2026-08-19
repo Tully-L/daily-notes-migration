@@ -163,44 +163,58 @@ tell application "Notes"
     set paraList to every paragraph of notePlain
     set AppleScript's text item delimiters to originalDelimiters
 
-    -- Only the "明日保留" section carries forward — it becomes tomorrow's "今日任务".
-    -- 今日任务 / 问题修复 in the source are NOT migrated (fresh start each day).
-    -- 待联系群组 no longer exists as a category.
+    -- 今日任务的未完成项(☐) + 明日保留的全部内容(不管有没有✓) → 都变成明天的"今日任务"。
+    -- 今日任务里已勾选(✓)的项 → 不迁移。
+    -- 问题修复 / 参考&备忘 → 整个不迁移，每天从空开始。待联系群组已不存在。
     set currentSection to ""
-    set sectionCarryForward to {}   -- content under 明日保留 in the source note
+    set sectionTasks to {}          -- 今日任务里未完成(☐)的项
+    set sectionCarryForward to {}   -- 明日保留里的全部项(含已勾选)
 
     repeat with i from 1 to count of paraList
         set p to item i of paraList
         set trimmed to my trimText(p)
 
         if trimmed starts with "━━━" then
-            if trimmed contains "明日保留" then
+            if trimmed contains "今日任务" then
+                set currentSection to "tasks"
+            else if trimmed contains "明日保留" then
                 set currentSection to "carryForward"
             else
                 set currentSection to ""
             end if
         else if trimmed is not "" then
-            if currentSection is "carryForward" then
-                if trimmed does not start with "✓" and trimmed does not start with "📋" then
+            if currentSection is "tasks" then
+                if trimmed starts with "☐" then
+                    set end of sectionTasks to trimmed
+                end if
+            else if currentSection is "carryForward" then
+                if trimmed does not start with "📋" then
                     set end of sectionCarryForward to trimmed
                 end if
             end if
         end if
     end repeat
 
-    log "Found " & (count of sectionCarryForward) & " items in 明日保留 → will become today's 今日任务"
+    log "Found " & (count of sectionTasks) & " unfinished 今日任务 + " & (count of sectionCarryForward) & " 明日保留 items → will become today's 今日任务"
 
     -- Build HTML with the 4-section template (no placeholder text, no 待联系群组)
     set htmlBody to "<div><i>📋 从 " & sourceNames & " 迁移</i></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
 
-    -- Section 1: 今日任务 ← 昨天的明日保留
+    -- Section 1: 今日任务 ← 昨天未完成的今日任务 + 昨天的明日保留(全部)
     set htmlBody to htmlBody & "<div><b>━━━ 今日任务 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionCarryForward) > 0 then
-        repeat with t in sectionCarryForward
+    if (count of sectionTasks) > 0 then
+        repeat with t in sectionTasks
             set htmlBody to htmlBody & "<div>" & t & "</div>" & return
         end repeat
+    end if
+    if (count of sectionCarryForward) > 0 then
+        repeat with cf in sectionCarryForward
+            set htmlBody to htmlBody & "<div>" & cf & "</div>" & return
+        end repeat
+    end if
+    if (count of sectionTasks) > 0 or (count of sectionCarryForward) > 0 then
         set htmlBody to htmlBody & "<div><br></div>" & return
     end if
 
@@ -245,12 +259,12 @@ tell application "Notes"
             return "OK Skipped '" & targetName & "': already has template (from previous run)"
         end if
 
-        if (count of sectionCarryForward) is 0 then
+        if (count of sectionTasks) is 0 and (count of sectionCarryForward) is 0 then
             return "OK Skipped '" & targetName & "': no content to migrate"
         end if
 
         set AppleScript's text item delimiters to return
-        set sourcePlain to (sectionCarryForward as string)
+        set sourcePlain to (sectionTasks as string) & (sectionCarryForward as string)
         set AppleScript's text item delimiters to originalDelimiters
 
         set contentExists to false
@@ -266,8 +280,11 @@ tell application "Notes"
         set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 从 " & sourceNames & " 追加迁移</b></div>" & return & "<div><br></div>" & return
 
         set newContent to newContent & "<div><b>━━━ 今日任务 ━━━</b></div>" & return & "<div><br></div>" & return
-        repeat with t in sectionCarryForward
+        repeat with t in sectionTasks
             set newContent to newContent & "<div>" & t & "</div>" & return
+        end repeat
+        repeat with cf in sectionCarryForward
+            set newContent to newContent & "<div>" & cf & "</div>" & return
         end repeat
         set newContent to newContent & "<div><br></div>" & return
 
@@ -276,10 +293,10 @@ tell application "Notes"
         set newContent to newContent & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
 
         set body of existingNote to existingBody & return & newContent
-        return "OK Appended '" & targetName & "' (" & (count of sectionCarryForward) & " items from " & sourceNames & ")"
+        return "OK Appended '" & targetName & "' (" & (count of sectionTasks) & " tasks + " & (count of sectionCarryForward) & " carry-forward from " & sourceNames & ")"
     else
         make new note at targetFolder with properties {name:targetName, body:htmlBody}
-        return "OK Created '" & targetName & "' (" & (count of sectionCarryForward) & " items from " & sourceNames & ")"
+        return "OK Created '" & targetName & "' (" & (count of sectionTasks) & " tasks + " & (count of sectionCarryForward) & " carry-forward from " & sourceNames & ")"
     end if
 end tell
 ENDOSA
