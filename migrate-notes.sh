@@ -163,30 +163,35 @@ tell application "Notes"
     set paraList to every paragraph of notePlain
     set AppleScript's text item delimiters to originalDelimiters
 
-    -- 今日任务的未完成项(☐) + 明日保留的全部内容(不管有没有✓) → 都变成明天的"今日任务"。
-    -- 今日任务里已勾选(✓)的项 → 不迁移。
+    -- 今日任务里 "@@@FINISHED@@@" 分割线以上的项 + 明日保留的全部内容(不管有没有完成) → 都变成明天的"今日任务"。
+    -- 今日任务里分割线以下的项 → 不迁移(用户手动把做完的任务剪切到线下面)。
     -- 问题修复 / 参考&备忘 → 整个不迁移，每天从空开始。待联系群组已不存在。
+    -- (不再依赖 Notes 原生勾选框状态 —— AppleScript 读不出勾选/未勾选，只能靠这条分割线判断位置)
     set currentSection to ""
-    set sectionTasks to {}          -- 今日任务里未完成(☐)的项
-    set sectionCarryForward to {}   -- 明日保留里的全部项(含已勾选)
+    set inDoneZone to false
+    set sectionTasks to {}          -- 今日任务里分割线以上、未完成的项
+    set sectionCarryForward to {}   -- 明日保留里的全部项
 
     repeat with i from 1 to count of paraList
         set p to item i of paraList
         set trimmed to my trimText(p)
 
         if trimmed starts with "━━━" then
-            if trimmed contains "今日任务" then
+            if trimmed contains "今日任务" or trimmed contains "Today" then
                 set currentSection to "tasks"
-            else if trimmed contains "明日保留" then
+                set inDoneZone to false
+            else if trimmed contains "明日保留" or trimmed contains "Tomorrow" then
                 set currentSection to "carryForward"
+                set inDoneZone to false
             else
                 set currentSection to ""
+                set inDoneZone to false
             end if
         else if trimmed is not "" then
-            if currentSection is "tasks" then
-                if trimmed starts with "☐" then
-                    set end of sectionTasks to trimmed
-                end if
+            if currentSection is "tasks" and not inDoneZone and trimmed is "@@@FINISHED@@@" then
+                set inDoneZone to true
+            else if currentSection is "tasks" and not inDoneZone then
+                set end of sectionTasks to trimmed
             else if currentSection is "carryForward" then
                 if trimmed does not start with "📋" then
                     set end of sectionCarryForward to trimmed
@@ -197,12 +202,12 @@ tell application "Notes"
 
     log "Found " & (count of sectionTasks) & " unfinished 今日任务 + " & (count of sectionCarryForward) & " 明日保留 items → will become today's 今日任务"
 
-    -- Build HTML with the 4-section template (no placeholder text, no 待联系群组)
-    set htmlBody to "<div><i>📋 从 " & sourceNames & " 迁移</i></div>" & return
+    -- Build HTML with the 3-section template (English headers going forward, Fixes category dropped 2026-08-21, see [[project_daily_notes_migration]])
+    set htmlBody to "<div><i>📋 Migrated from " & sourceNames & "</i></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
 
-    -- Section 1: 今日任务 ← 昨天未完成的今日任务 + 昨天的明日保留(全部)
-    set htmlBody to htmlBody & "<div><b>━━━ 今日任务 ━━━</b></div>" & return
+    -- Section 1: Today ← yesterday's unfinished tasks + yesterday's Tomorrow (all of it)
+    set htmlBody to htmlBody & "<div><b>━━━ Today ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
     if (count of sectionTasks) > 0 then
         repeat with t in sectionTasks
@@ -214,22 +219,17 @@ tell application "Notes"
             set htmlBody to htmlBody & "<div>" & cf & "</div>" & return
         end repeat
     end if
-    if (count of sectionTasks) > 0 or (count of sectionCarryForward) > 0 then
-        set htmlBody to htmlBody & "<div><br></div>" & return
-    end if
-
-    -- Section 2: 问题修复（每天从空开始）
-    set htmlBody to htmlBody & "<div><b>━━━ 问题修复 ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
+    set htmlBody to htmlBody & "<div>@@@FINISHED@@@</div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
 
-    -- Section 3: 明日保留（每天从空开始）
-    set htmlBody to htmlBody & "<div><b>━━━ 明日保留 ━━━</b></div>" & return
+    -- Section 2: Tomorrow (starts empty every day)
+    set htmlBody to htmlBody & "<div><b>━━━ Tomorrow ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
 
-    -- Section 4: 参考 & 备忘（每天从空开始）
-    set htmlBody to htmlBody & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return
+    -- Section 3: Reference (starts empty every day)
+    set htmlBody to htmlBody & "<div><b>━━━ Reference ━━━</b></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
     set htmlBody to htmlBody & "<div><br></div>" & return
 
@@ -277,9 +277,9 @@ tell application "Notes"
         end if
 
         set existingBody to body of existingNote
-        set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 从 " & sourceNames & " 追加迁移</b></div>" & return & "<div><br></div>" & return
+        set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 Appended from " & sourceNames & "</b></div>" & return & "<div><br></div>" & return
 
-        set newContent to newContent & "<div><b>━━━ 今日任务 ━━━</b></div>" & return & "<div><br></div>" & return
+        set newContent to newContent & "<div><b>━━━ Today ━━━</b></div>" & return & "<div><br></div>" & return
         repeat with t in sectionTasks
             set newContent to newContent & "<div>" & t & "</div>" & return
         end repeat
@@ -287,10 +287,11 @@ tell application "Notes"
             set newContent to newContent & "<div>" & cf & "</div>" & return
         end repeat
         set newContent to newContent & "<div><br></div>" & return
+        set newContent to newContent & "<div>@@@FINISHED@@@</div>" & return
+        set newContent to newContent & "<div><br></div>" & return
 
-        set newContent to newContent & "<div><b>━━━ 问题修复 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
-        set newContent to newContent & "<div><b>━━━ 明日保留 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
-        set newContent to newContent & "<div><b>━━━ 参考 &amp; 备忘 ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
+        set newContent to newContent & "<div><b>━━━ Tomorrow ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
+        set newContent to newContent & "<div><b>━━━ Reference ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
 
         set body of existingNote to existingBody & return & newContent
         return "OK Appended '" & targetName & "' (" & (count of sectionTasks) & " tasks + " & (count of sectionCarryForward) & " carry-forward from " & sourceNames & ")"
