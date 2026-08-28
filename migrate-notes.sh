@@ -5,6 +5,11 @@
 #
 # 安装：LaunchAgent 控制运行时间（工作日 08:00）
 # 位置：~/Library/LaunchAgents/com.tully.daily-notes-migration.plist
+#
+# 格式保留：carried-over 内容不再靠 plaintext 重建（会丢加粗/列表/图片），
+# 改成解析源笔记 body 的原始 HTML 段落，逐段保留格式后再拼进新笔记。
+# 勾选框的选中状态本身 AppleScript 读写两头都摸不到（Notes 完全不导出这
+# 个标记），继续靠 @@@FINISHED@@@ 分割线的"位置"判断要不要迁移。
 # ============================================================
 
 set -euo pipefail
@@ -12,6 +17,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_FILE="/tmp/daily-notes-migration.log"
 HOLIDAYS_FILE="${SCRIPT_DIR}/holidays.txt"
+TRANSFORM_PY="${SCRIPT_DIR}/transform.py"
+MAX_BODY_BYTES=5000000  # 5MB — 超过这个量提示可能含大图，见 feedback_applescript_notes_write_size_limit
+
+TMP_DIR="$(mktemp -d /tmp/daily-notes-migration-XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 exec > "$LOG_FILE" 2>&1
 echo "[$(date)] Starting daily notes migration..."
@@ -67,171 +77,132 @@ fi
 
 echo "Target note: $TARGET_NAME (${WEEKDAY_SHORT})"
 
-# ── 执行迁移 ──
-/usr/bin/osascript <<ENDOSA
-set accountName to "On My Mac"
-set folderName to "Notes"
+# ── 第一步：把源笔记的原始 body HTML 逐个导出到临时文件 ──
+MANIFEST=$(/usr/bin/osascript <<ENDOSA
 set sourcePrefix to "$SOURCE_PREFIX"
-set targetName to "$TARGET_NAME"
-
-on trimText(s)
-    if (length of s) ≤ 1 then return s
-    repeat while (length of s) > 0 and (s starts with " " or s starts with tab)
-        if s starts with " " then
-            set s to text 2 thru -1 of s
-        else if s starts with tab then
-            set s to text 2 thru -1 of s
-        end if
-        if (length of s) ≤ 1 then exit repeat
-    end repeat
-    return s
-end trimText
+set tmpDir to "$TMP_DIR"
 
 tell application "Notes"
-    -- Find Notes folder
     set targetFolder to missing value
-    set folderList to folders of account accountName
+    set folderList to folders of account "On My Mac"
     repeat with f in folderList
-        if name of f is folderName then
+        if name of f is "Notes" then
             set targetFolder to f
             exit repeat
         end if
     end repeat
+    if targetFolder is missing value then return "ERROR: Notes folder not found"
 
-    if targetFolder is missing value then
-        return "ERROR: Notes folder not found"
-    end if
-
-    -- Find all source notes matching MMDD- prefix
     set sourceNotes to {}
     set noteList to notes of targetFolder
     repeat with n in noteList
-        set noteName to name of n
-        if noteName starts with sourcePrefix then
-            set end of sourceNotes to n
-        end if
+        if (name of n) starts with sourcePrefix then set end of sourceNotes to n
     end repeat
+    if (count of sourceNotes) is 0 then return "ERROR: No source note found for prefix " & sourcePrefix
 
-    if (count of sourceNotes) is 0 then
-        return "ERROR: No source note found for prefix " & sourcePrefix
-    end if
-
-    -- Log all found source notes
-    set sourceNames to ""
+    set manifestLines to {}
+    set idx to 0
     repeat with sn in sourceNotes
-        if sourceNames is "" then
-            set sourceNames to name of sn
-        else
-            set sourceNames to sourceNames & ", " & name of sn
+        set idx to idx + 1
+        set bodyFile to tmpDir & "/source_" & idx & ".html"
+        set bodyText to body of sn
+        set fh to open for access POSIX file bodyFile with write permission
+        set eof of fh to 0
+        write bodyText to fh as «class utf8»
+        close access fh
+        set end of manifestLines to (name of sn) & tab & bodyFile
+    end repeat
+
+    set AppleScript's text item delimiters to linefeed
+    set manifestText to manifestLines as string
+    set AppleScript's text item delimiters to ""
+    return manifestText
+end tell
+ENDOSA
+)
+
+if [[ "$MANIFEST" == ERROR:* ]]; then
+    echo "$MANIFEST"
+    exit 1
+fi
+
+echo "Source notes dumped:"
+echo "$MANIFEST"
+
+# ── 第二步：manifest 转成 JSON，跑 transform.py 解析+重组 HTML ──
+# (manifest 走临时文件传给 python，不走 stdin —— heredoc 已经占用了 python 脚本本身的 stdin，
+#  和 <<< herestring 叠在同一个命令上时后者会被静默吃掉，之前在这里踩过一次坑)
+echo "$MANIFEST" > "$TMP_DIR/manifest_raw.txt"
+
+python3 - "$TMP_DIR" <<'ENDPY'
+import json, sys
+tmp_dir = sys.argv[1]
+sources = []
+names = []
+with open(f"{tmp_dir}/manifest_raw.txt", encoding="utf-8") as f:
+    for line in f.read().splitlines():
+        if not line.strip():
+            continue
+        name, body_file = line.split("\t", 1)
+        sources.append({"name": name, "bodyFile": body_file})
+        names.append(name)
+manifest = {
+    "sources": sources,
+    "todayOut": f"{tmp_dir}/today_frag.html",
+    "tomorrowOut": f"{tmp_dir}/tomorrow_frag.html",
+    "todayPlainOut": f"{tmp_dir}/today_plain.txt",
+    "tomorrowPlainOut": f"{tmp_dir}/tomorrow_plain.txt",
+}
+with open(f"{tmp_dir}/manifest.json", "w", encoding="utf-8") as f:
+    json.dump(manifest, f)
+with open(f"{tmp_dir}/source_names.txt", "w", encoding="utf-8") as f:
+    f.write(", ".join(names))
+ENDPY
+
+SOURCE_NAMES=$(cat "$TMP_DIR/source_names.txt")
+echo "Source names: $SOURCE_NAMES"
+
+TRANSFORM_RESULT=$(python3 "$TRANSFORM_PY" < "$TMP_DIR/manifest.json")
+echo "Transform result: $TRANSFORM_RESULT"
+
+TODAY_FRAG_FILE="$TMP_DIR/today_frag.html"
+TOMORROW_FRAG_FILE="$TMP_DIR/tomorrow_frag.html"
+TODAY_PLAIN_FILE="$TMP_DIR/today_plain.txt"
+TOMORROW_PLAIN_FILE="$TMP_DIR/tomorrow_plain.txt"
+
+TODAY_COUNT=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['todayCount'])" "$TRANSFORM_RESULT")
+TOMORROW_COUNT=$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['tomorrowCount'])" "$TRANSFORM_RESULT")
+
+# ── 体积安全检查（大图内嵌截图写入会静默截断，见 feedback_applescript_notes_write_size_limit）──
+TOTAL_BYTES=$(( $(wc -c < "$TODAY_FRAG_FILE") + $(wc -c < "$TOMORROW_FRAG_FILE") ))
+if [ "$TOTAL_BYTES" -gt "$MAX_BODY_BYTES" ]; then
+    echo "WARNING: carried-over content is ${TOTAL_BYTES} bytes (>${MAX_BODY_BYTES}) — likely contains large embedded images. Notes.app may silently truncate on write. Check '$TARGET_NAME' manually after this run."
+fi
+
+# ── 第三步：写入/追加目标笔记（保格式）──
+RESULT=$(/usr/bin/osascript <<ENDOSA
+set targetName to "$TARGET_NAME"
+set sourceNames to "$SOURCE_NAMES"
+set todayFrag to ""
+set tomorrowFrag to ""
+try
+    set todayFrag to (read (POSIX file "$TODAY_FRAG_FILE") as «class utf8»)
+end try
+try
+    set tomorrowFrag to (read (POSIX file "$TOMORROW_FRAG_FILE") as «class utf8»)
+end try
+set todayCount to $TODAY_COUNT
+set tomorrowCount to $TOMORROW_COUNT
+
+tell application "Notes"
+    set targetFolder to missing value
+    set folderList to folders of account "On My Mac"
+    repeat with f in folderList
+        if name of f is "Notes" then
+            set targetFolder to f
+            exit repeat
         end if
     end repeat
-    log "Found " & (count of sourceNotes) & " source notes: " & sourceNames
-
-    -- Concatenate plaintext from ALL source notes (skip first line = note title)
-    set notePlain to ""
-    set originalDelimiters to AppleScript's text item delimiters
-    repeat with sn in sourceNotes
-        set snText to plaintext of sn
-        set AppleScript's text item delimiters to return
-        set snLines to every paragraph of snText
-        set AppleScript's text item delimiters to originalDelimiters
-        set started to false
-        set snName to name of sn
-        repeat with lineNum from 2 to count of snLines
-            set lineContent to item lineNum of snLines
-            set trimmedLine to my trimText(lineContent)
-            if not started and trimmedLine is snName then
-                -- still in the title area, skip
-            else if not started and trimmedLine is not "" then
-                set started to true
-                if notePlain is not "" then
-                    set notePlain to notePlain & return
-                end if
-                set notePlain to notePlain & lineContent
-            else if started then
-                if notePlain is not "" then
-                    set notePlain to notePlain & return
-                end if
-                set notePlain to notePlain & lineContent
-            end if
-        end repeat
-    end repeat
-
-    -- Parse paragraphs
-    set originalDelimiters to AppleScript's text item delimiters
-    set AppleScript's text item delimiters to return
-    set paraList to every paragraph of notePlain
-    set AppleScript's text item delimiters to originalDelimiters
-
-    -- 今日任务里 "@@@FINISHED@@@" 分割线以上的项 + 明日保留的全部内容(不管有没有完成) → 都变成明天的"今日任务"。
-    -- 今日任务里分割线以下的项 → 不迁移(用户手动把做完的任务剪切到线下面)。
-    -- 问题修复 / 参考&备忘 → 整个不迁移，每天从空开始。待联系群组已不存在。
-    -- (不再依赖 Notes 原生勾选框状态 —— AppleScript 读不出勾选/未勾选，只能靠这条分割线判断位置)
-    set currentSection to ""
-    set inDoneZone to false
-    set sectionTasks to {}          -- 今日任务里分割线以上、未完成的项
-    set sectionCarryForward to {}   -- 明日保留里的全部项
-
-    repeat with i from 1 to count of paraList
-        set p to item i of paraList
-        set trimmed to my trimText(p)
-
-        if trimmed starts with "━━━" then
-            if trimmed contains "今日任务" or trimmed contains "Today" then
-                set currentSection to "tasks"
-                set inDoneZone to false
-            else if trimmed contains "明日保留" or trimmed contains "Tomorrow" then
-                set currentSection to "carryForward"
-                set inDoneZone to false
-            else
-                set currentSection to ""
-                set inDoneZone to false
-            end if
-        else if trimmed is not "" then
-            if currentSection is "tasks" and not inDoneZone and trimmed is "@@@FINISHED@@@" then
-                set inDoneZone to true
-            else if currentSection is "tasks" and not inDoneZone then
-                set end of sectionTasks to trimmed
-            else if currentSection is "carryForward" then
-                if trimmed does not start with "📋" then
-                    set end of sectionCarryForward to trimmed
-                end if
-            end if
-        end if
-    end repeat
-
-    log "Found " & (count of sectionTasks) & " unfinished 今日任务 + " & (count of sectionCarryForward) & " 明日保留 items → will become today's 今日任务"
-
-    -- Build HTML with the 3-section template (English headers going forward, Fixes category dropped 2026-08-21, see [[project_daily_notes_migration]])
-    set htmlBody to "<div><i>📋 Migrated from " & sourceNames & "</i></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-
-    -- Section 1: Today ← yesterday's unfinished tasks + yesterday's Tomorrow (all of it)
-    set htmlBody to htmlBody & "<div><b>━━━ Today ━━━</b></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    if (count of sectionTasks) > 0 then
-        repeat with t in sectionTasks
-            set htmlBody to htmlBody & "<div>" & t & "</div>" & return
-        end repeat
-    end if
-    if (count of sectionCarryForward) > 0 then
-        repeat with cf in sectionCarryForward
-            set htmlBody to htmlBody & "<div>" & cf & "</div>" & return
-        end repeat
-    end if
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    set htmlBody to htmlBody & "<div>@@@FINISHED@@@</div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-
-    -- Section 2: Tomorrow (starts empty every day)
-    set htmlBody to htmlBody & "<div><b>━━━ Tomorrow ━━━</b></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-
-    -- Section 3: Reference (starts empty every day)
-    set htmlBody to htmlBody & "<div><b>━━━ Reference ━━━</b></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
-    set htmlBody to htmlBody & "<div><br></div>" & return
 
     -- Check if target already exists (user may have pre-created it)
     set existingNote to missing value
@@ -259,20 +230,11 @@ tell application "Notes"
             return "OK Skipped '" & targetName & "': already has template (from previous run)"
         end if
 
-        if (count of sectionTasks) is 0 and (count of sectionCarryForward) is 0 then
+        if todayCount is 0 and tomorrowCount is 0 then
             return "OK Skipped '" & targetName & "': no content to migrate"
         end if
 
-        set AppleScript's text item delimiters to return
-        set sourcePlain to (sectionTasks as string) & (sectionCarryForward as string)
-        set AppleScript's text item delimiters to originalDelimiters
-
-        set contentExists to false
-        if sourcePlain is not "" and existingPlain contains sourcePlain then
-            set contentExists to true
-        end if
-
-        if contentExists then
+        if todayFrag is not "" and existingPlain contains todayFrag then
             return "OK Skipped '" & targetName & "': all content already present"
         end if
 
@@ -280,12 +242,8 @@ tell application "Notes"
         set newContent to "<div><br></div>" & return & "<div><hr></div>" & return & "<div><b>📋 Appended from " & sourceNames & "</b></div>" & return & "<div><br></div>" & return
 
         set newContent to newContent & "<div><b>━━━ Today ━━━</b></div>" & return & "<div><br></div>" & return
-        repeat with t in sectionTasks
-            set newContent to newContent & "<div>" & t & "</div>" & return
-        end repeat
-        repeat with cf in sectionCarryForward
-            set newContent to newContent & "<div>" & cf & "</div>" & return
-        end repeat
+        if todayFrag is not "" then set newContent to newContent & todayFrag & return
+        if tomorrowFrag is not "" then set newContent to newContent & tomorrowFrag & return
         set newContent to newContent & "<div><br></div>" & return
         set newContent to newContent & "<div>@@@FINISHED@@@</div>" & return
         set newContent to newContent & "<div><br></div>" & return
@@ -294,12 +252,28 @@ tell application "Notes"
         set newContent to newContent & "<div><b>━━━ Reference ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
 
         set body of existingNote to existingBody & return & newContent
-        return "OK Appended '" & targetName & "' (" & (count of sectionTasks) & " tasks + " & (count of sectionCarryForward) & " carry-forward from " & sourceNames & ")"
+        return "OK Appended '" & targetName & "' (" & todayCount & " tasks + " & tomorrowCount & " carry-forward from " & sourceNames & ")"
     else
+        set htmlBody to "<div><i>📋 Migrated from " & sourceNames & "</i></div>" & return
+        set htmlBody to htmlBody & "<div><br></div>" & return
+        set htmlBody to htmlBody & "<div><b>━━━ Today ━━━</b></div>" & return & "<div><br></div>" & return
+        if todayFrag is not "" then set htmlBody to htmlBody & todayFrag & return
+        set htmlBody to htmlBody & "<div><br></div>" & return
+        set htmlBody to htmlBody & "<div>@@@FINISHED@@@</div>" & return
+        set htmlBody to htmlBody & "<div><br></div>" & return
+
+        set htmlBody to htmlBody & "<div><b>━━━ Tomorrow ━━━</b></div>" & return & "<div><br></div>" & return
+        if tomorrowFrag is not "" then set htmlBody to htmlBody & tomorrowFrag & return
+        set htmlBody to htmlBody & "<div><br></div>" & return
+
+        set htmlBody to htmlBody & "<div><b>━━━ Reference ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
+
         make new note at targetFolder with properties {name:targetName, body:htmlBody}
-        return "OK Created '" & targetName & "' (" & (count of sectionTasks) & " tasks + " & (count of sectionCarryForward) & " carry-forward from " & sourceNames & ")"
+        return "OK Created '" & targetName & "' (" & todayCount & " tasks + " & tomorrowCount & " carry-forward from " & sourceNames & ")"
     end if
 end tell
 ENDOSA
+)
 
-echo "[$(date)] Migration finished. Exit code: $?"
+echo "$RESULT"
+echo "[$(date)] Migration finished."
