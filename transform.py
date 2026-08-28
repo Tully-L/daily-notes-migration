@@ -78,7 +78,7 @@ def extract(note_name, body_html):
                 current_section = None
                 in_done_zone = False
             continue
-        if not t:
+        if not t and "<img" not in u["html"]:
             continue
         if current_section == "tasks" and not in_done_zone and t == "@@@FINISHED@@@":
             in_done_zone = True
