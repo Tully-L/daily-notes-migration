@@ -35,44 +35,52 @@ WEEKDAY_SHORT=$(date +%a)  # Mon, Tue, Wed...
 
 echo "Today: $TODAY ($WEEKDAY_SHORT, weekday=$WEEKDAY)"
 
-# ── 周末跳过 ──
-if [ "$WEEKDAY" -ge 6 ]; then
-    echo "Weekend — skipping."
-    exit 0
-fi
-
-# ── 节假日跳过 ──
-if [ -f "$HOLIDAYS_FILE" ]; then
-    TODAY_MMDD="${MONTH}${DAY}"
-    if grep -q "^${TODAY_MMDD}$" "$HOLIDAYS_FILE" 2>/dev/null; then
-        echo "Holiday ($TODAY_MMDD) — skipping."
+# ── 测试模式：TEST_SOURCE_PREFIX/TEST_TARGET_NAME 由 tests/run_tests.sh 注入，
+#    绕过周末/节假日跳过与真实日期推算，直接指向测试用的临时笔记 ──
+if [ -n "${TEST_SOURCE_PREFIX:-}" ]; then
+    SOURCE_PREFIX="$TEST_SOURCE_PREFIX"
+    TARGET_NAME="${TEST_TARGET_NAME:?TEST_TARGET_NAME required when TEST_SOURCE_PREFIX is set}"
+    echo "TEST MODE: source_prefix=$SOURCE_PREFIX target=$TARGET_NAME"
+else
+    # ── 周末跳过 ──
+    if [ "$WEEKDAY" -ge 6 ]; then
+        echo "Weekend — skipping."
         exit 0
     fi
-fi
 
-# ── 计算源日期（昨天/上周五） ──
-if [ "$WEEKDAY" -eq 1 ]; then
-    # Monday → source = last Friday
-    SOURCE_MM=$(date -v-3d +%m)
-    SOURCE_DD=$(date -v-3d +%d)
-    echo "Monday → source last Friday"
-else
-    # Tue-Fri → source = yesterday
-    SOURCE_MM=$(date -v-1d +%m)
-    SOURCE_DD=$(date -v-1d +%d)
-    echo "Weekday → source yesterday"
-fi
+    # ── 节假日跳过 ──
+    if [ -f "$HOLIDAYS_FILE" ]; then
+        TODAY_MMDD="${MONTH}${DAY}"
+        if grep -q "^${TODAY_MMDD}$" "$HOLIDAYS_FILE" 2>/dev/null; then
+            echo "Holiday ($TODAY_MMDD) — skipping."
+            exit 0
+        fi
+    fi
 
-# ── 源笔记前缀 ──
-SOURCE_PREFIX="${SOURCE_MM}${SOURCE_DD}-"
-echo "Source prefix: $SOURCE_PREFIX"
+    # ── 计算源日期（昨天/上周五） ──
+    if [ "$WEEKDAY" -eq 1 ]; then
+        # Monday → source = last Friday
+        SOURCE_MM=$(date -v-3d +%m)
+        SOURCE_DD=$(date -v-3d +%d)
+        echo "Monday → source last Friday"
+    else
+        # Tue-Fri → source = yesterday
+        SOURCE_MM=$(date -v-1d +%m)
+        SOURCE_DD=$(date -v-1d +%d)
+        echo "Weekday → source yesterday"
+    fi
 
-# ── 目标笔记名称（今天） ──
-TARGET_PREFIX="${MONTH}${DAY}-"
-if [ "$WEEKDAY" -eq 2 ]; then
-    TARGET_NAME="${TARGET_PREFIX}Tue"
-else
-    TARGET_NAME="${TARGET_PREFIX}"
+    # ── 源笔记前缀 ──
+    SOURCE_PREFIX="${SOURCE_MM}${SOURCE_DD}-"
+    echo "Source prefix: $SOURCE_PREFIX"
+
+    # ── 目标笔记名称（今天） ──
+    TARGET_PREFIX="${MONTH}${DAY}-"
+    if [ "$WEEKDAY" -eq 2 ]; then
+        TARGET_NAME="${TARGET_PREFIX}Tue"
+    else
+        TARGET_NAME="${TARGET_PREFIX}"
+    fi
 fi
 
 echo "Target note: $TARGET_NAME (${WEEKDAY_SHORT})"
