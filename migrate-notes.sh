@@ -258,13 +258,12 @@ tell application "Notes"
         set htmlBody to htmlBody & "<div><br></div>" & return
         set htmlBody to htmlBody & "<div><b>━━━ Today ━━━</b></div>" & return & "<div><br></div>" & return
         if todayFrag is not "" then set htmlBody to htmlBody & todayFrag & return
+        if tomorrowFrag is not "" then set htmlBody to htmlBody & tomorrowFrag & return
         set htmlBody to htmlBody & "<div><br></div>" & return
         set htmlBody to htmlBody & "<div>@@@FINISHED@@@</div>" & return
         set htmlBody to htmlBody & "<div><br></div>" & return
 
-        set htmlBody to htmlBody & "<div><b>━━━ Tomorrow ━━━</b></div>" & return & "<div><br></div>" & return
-        if tomorrowFrag is not "" then set htmlBody to htmlBody & tomorrowFrag & return
-        set htmlBody to htmlBody & "<div><br></div>" & return
+        set htmlBody to htmlBody & "<div><b>━━━ Tomorrow ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
 
         set htmlBody to htmlBody & "<div><b>━━━ Reference ━━━</b></div>" & return & "<div><br></div>" & return & "<div><br></div>" & return
 
