@@ -90,6 +90,9 @@ MANIFEST=$(/usr/bin/osascript <<ENDOSA
 set sourcePrefix to "$SOURCE_PREFIX"
 set tmpDir to "$TMP_DIR"
 
+-- 默认 AppleEvent 超时只有 2 分钟，早上 Notes 刚启动/正在同步时会直接超时报错
+-- (2026-09-15 就是这么漏掉一天的)，放宽到 15 分钟
+with timeout of 900 seconds
 tell application "Notes"
     set targetFolder to missing value
     set folderList to folders of account "On My Mac"
@@ -126,6 +129,7 @@ tell application "Notes"
     set AppleScript's text item delimiters to ""
     return manifestText
 end tell
+end timeout
 ENDOSA
 )
 
@@ -202,6 +206,7 @@ end try
 set todayCount to $TODAY_COUNT
 set tomorrowCount to $TOMORROW_COUNT
 
+with timeout of 900 seconds
 tell application "Notes"
     set targetFolder to missing value
     set folderList to folders of account "On My Mac"
@@ -279,6 +284,7 @@ tell application "Notes"
         return "OK Created '" & targetName & "' (" & todayCount & " tasks + " & tomorrowCount & " carry-forward from " & sourceNames & ")"
     end if
 end tell
+end timeout
 ENDOSA
 )
 
